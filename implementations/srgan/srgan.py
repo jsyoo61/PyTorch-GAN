@@ -7,7 +7,7 @@ Instrustion on running the script:
 2. Save the folder 'img_align_celeba' to '../../data/'
 4. Run the sript using command 'python3 srgan.py'
 """
-
+# %%
 import argparse
 import os
 import numpy as np
@@ -28,6 +28,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
+from tools.tools import tdict, Timer, append, AverageMeter
+from utils import *
+
+# %%
 os.makedirs("images", exist_ok=True)
 os.makedirs("saved_models", exist_ok=True)
 
@@ -36,6 +40,7 @@ parser.add_argument("--epoch", type=int, default=0, help="epoch to start trainin
 parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
 parser.add_argument("--dataset_name", type=str, default="img_align_celeba", help="name of the dataset")
 parser.add_argument("--batch_size", type=int, default=4, help="size of the batches")
+parser.add_argument("--batch_m", type=int, default=1, help="batch multiplier. iterate over n batches and then apply gradients")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
@@ -46,9 +51,12 @@ parser.add_argument("--hr_width", type=int, default=256, help="high res. image w
 parser.add_argument("--channels", type=int, default=3, help="number of image channels")
 parser.add_argument("--sample_interval", type=int, default=100, help="interval between saving image samples")
 parser.add_argument("--checkpoint_interval", type=int, default=-1, help="interval between model checkpoints")
+parser.add_argument("--checkpoint_name", type=str, default='default', help="name of checkpoint")
+
 opt = parser.parse_args()
 print(opt)
 
+# %%
 cuda = torch.cuda.is_available()
 
 hr_shape = (opt.hr_height, opt.hr_width)
@@ -57,6 +65,8 @@ hr_shape = (opt.hr_height, opt.hr_width)
 generator = GeneratorResNet()
 discriminator = Discriminator(input_shape=(opt.channels, *hr_shape))
 feature_extractor = FeatureExtractor()
+print('number of parameters: %s'%sum(p.numel() for p in generator.parameters()))
+print('number of parameters: %s'%sum(p.numel() for p in discriminator.parameters()))
 
 # Set feature extractor to inference mode
 feature_extractor.eval()
@@ -90,13 +100,20 @@ dataloader = DataLoader(
     num_workers=opt.n_cpu,
 )
 
+global_timer = Timer()
+epoch_timer = Timer()
+iter_timer = Timer()
+iter_time_meter = AverageMeter()
+
 # ----------
 #  Training
 # ----------
-
+global_timer.start()
 for epoch in range(opt.epoch, opt.n_epochs):
+    epoch_timer.start()
     for i, imgs in enumerate(dataloader):
-
+        if i % opt.batch_m == 0:
+            iter_timer.start()
         # Configure model input
         imgs_lr = Variable(imgs["lr"].type(Tensor))
         imgs_hr = Variable(imgs["hr"].type(Tensor))
@@ -109,7 +126,9 @@ for epoch in range(opt.epoch, opt.n_epochs):
         #  Train Generators
         # ------------------
 
-        optimizer_G.zero_grad()
+        if i % opt.batch_m == 0:
+            print('zero_grad_G')
+            optimizer_G.zero_grad()
 
         # Generate a high resolution image from low resolution input
         gen_hr = generator(imgs_lr)
@@ -125,14 +144,19 @@ for epoch in range(opt.epoch, opt.n_epochs):
         # Total loss
         loss_G = loss_content + 1e-3 * loss_GAN
 
+        loss_G = loss_G / opt.batch_m
         loss_G.backward()
-        optimizer_G.step()
+        if (i+1) % opt.batch_m == 0:
+            print('step_G')
+            optimizer_G.step()
 
         # ---------------------
         #  Train Discriminator
         # ---------------------
 
-        optimizer_D.zero_grad()
+        if i % opt.batch_m == 0:
+            print('zero_grad_D')
+            optimizer_D.zero_grad()
 
         # Loss of real and fake images
         loss_real = criterion_GAN(discriminator(imgs_hr), valid)
@@ -141,28 +165,68 @@ for epoch in range(opt.epoch, opt.n_epochs):
         # Total loss
         loss_D = (loss_real + loss_fake) / 2
 
+        loss_D = loss_D / opt.batch_m
         loss_D.backward()
-        optimizer_D.step()
+        if (i+1) % opt.batch_m == 0:
+            print('step_D')
+            optimizer_D.step()
 
         # --------------
         #  Log Progress
         # --------------
 
-        sys.stdout.write(
-            "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-            % (epoch, opt.n_epochs, i, len(dataloader), loss_D.item(), loss_G.item())
-        )
+        if (i+1) % opt.batch_m == 0:
+            print(
+                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                % (epoch, opt.n_epochs, i, len(dataloader), loss_D.item()*opt.batch_m, loss_G.item()*opt.batch_m)
+            )
+            iter_time_meter.update(iter_timer.stop())
+            print('time for iteration: %s (%s)'%(iter_time_meter.val, iter_time_meter.avg))
 
         batches_done = epoch * len(dataloader) + i
         if batches_done % opt.sample_interval == 0:
             # Save image grid with upsampled inputs and SRGAN outputs
             imgs_lr = nn.functional.interpolate(imgs_lr, scale_factor=4)
+            imgs_hr_raw = imgs['hr_raw'].type(Tensor)
+            with torch.no_grad():
+                print('[psnr] (imgs_lr):%s, (gen_hr):%s'%(psnr(minmaxscaler(imgs_lr), imgs_hr_raw, max_val=1).mean().item(), psnr(minmaxscaler(gen_hr), imgs_hr_raw, max_val=1).mean().item()))
+
             gen_hr = make_grid(gen_hr, nrow=1, normalize=True)
             imgs_lr = make_grid(imgs_lr, nrow=1, normalize=True)
             img_grid = torch.cat((imgs_lr, gen_hr), -1)
             save_image(img_grid, "images/%d.png" % batches_done, normalize=False)
-
+    elapsed_time = epoch_timer.stop()
+    print('Elapsed_time for epoch(%s): %s'%(epoch,elapsed_time))
     if opt.checkpoint_interval != -1 and epoch % opt.checkpoint_interval == 0:
         # Save model checkpoints
         torch.save(generator.state_dict(), "saved_models/generator_%d.pth" % epoch)
         torch.save(discriminator.state_dict(), "saved_models/discriminator_%d.pth" % epoch)
+elapsed_time = global_timer.stop()
+print('Elapsed_time for training: %s'%str(elapsed_time))
+append(str(elapsed_time), 'elapsed_time.txt')
+print('Average time per iteration: %s'%str(iter_time_meter.avg))
+torch.save(generator.state_dict(), "saved_models/generator_%s.pth" % opt.checkpoint_name)
+torch.save(discriminator.state_dict(), "saved_models/discriminator_%s.pth" % opt.checkpoint_name)
+
+'''
+batch_size 32, batch_m=4 -> 128 batch
+lr = 0.0002
+checkpoint_name = original
+
+time per iter: 3.997
+
+                 PSNR       SSIM
+ generator    22.8740     0.7806
+   low res    26.2965     0.7801
+
+                 PSNR       SSIM
+generator    20.1283     0.6818
+  low res    24.3709     0.7694
+
+# PSNR 20.1283, SSIM 0.6818
+# 5390
+# 5368
+# 5552.96 /60 /60
+# 5552.96 sec
+
+'''

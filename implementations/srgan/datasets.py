@@ -24,22 +24,23 @@ class ImageDataset(Dataset):
                 transforms.Normalize(mean, std),
             ]
         )
-        self.hr_transform = transforms.Compose(
+        self.hr_transform_raw = transforms.Compose(
             [
                 transforms.Resize((hr_height, hr_height), Image.BICUBIC),
                 transforms.ToTensor(),
-                transforms.Normalize(mean, std),
             ]
         )
+        self.hr_transform = transforms.Normalize(mean,std)
 
         self.files = sorted(glob.glob(root + "/*.*"))
 
     def __getitem__(self, index):
         img = Image.open(self.files[index % len(self.files)])
         img_lr = self.lr_transform(img)
-        img_hr = self.hr_transform(img)
+        img_hr_raw = self.hr_transform_raw(img)
+        img_hr = self.hr_transform(img_hr_raw)
 
-        return {"lr": img_lr, "hr": img_hr}
+        return {"lr": img_lr, "hr": img_hr, 'hr_raw': img_hr_raw}
 
     def __len__(self):
         return len(self.files)

@@ -5,8 +5,12 @@
 .DS_Store
 
 data/*/
+data/
 implementations/*/data
 implementations/*/images
+implementations/*/images_test
+implementations/*/fig
+implementations/*/test
 implementations/*/saved_models
 
 __pycache__
