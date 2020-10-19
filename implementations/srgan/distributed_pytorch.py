@@ -1,22 +1,19 @@
 import os
-from datetime import datetime
 import argparse
-import torch.multiprocessing as mp
-import torchvision
-import torchvision.transforms as transforms
-import torch
-import torch.nn as nn
-import torch.distributed as dist
-from apex.parallel import DistributedDataParallel as DDP
-from apex import amp
-
-from torchvision.utils import save_image, make_grid
-
 from models import *
 from datasets import *
 from tools.tools import Timer, AverageMeter
 import socket
 from utils import *
+import torch
+import torch.nn as nn
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import torchvision
+import torchvision.transforms as transforms
+from torchvision.utils import save_image, make_grid
+from apex import amp
+from apex.parallel import DistributedDataParallel as DDP
 
 def main():
 
@@ -53,7 +50,6 @@ def main():
     os.environ['MASTER_PORT'] = '20000'
     print(args)
     mp.spawn(train, nprocs=args.gpus, args=(args,))
-
 
 def train(gpu, args):
     rank = args.nr * args.gpus + gpu
@@ -96,8 +92,8 @@ def train(gpu, args):
                                                num_workers=0,
                                                pin_memory=True,
                                                sampler=train_sampler)
+
     torch.autograd.set_detect_anomaly(True)
-    start = datetime.now()
     total_step = len(train_loader)
 
     if gpu == 0 :
@@ -107,6 +103,7 @@ def train(gpu, args):
         iter_time_meter = AverageMeter()
 
         global_timer.start()
+
     for epoch in range(args.n_epochs):
         if gpu == 0:
             epoch_timer.start()
@@ -167,7 +164,7 @@ def train(gpu, args):
 
                     gen_hr = make_grid(gen_hr, nrow=1, normalize=True)
                     imgs_lr = make_grid(imgs_lr, nrow=1, normalize=True)
-                    img_grid = torch.cat((imgs_lr, gen_hr), -1)
+                    img_grid = torch.cat((imgs_hr_raw, imgs_lr, gen_hr), -1)
                     save_image(img_grid, "images/%d.png" % batches_done, normalize=False)
         if gpu==0:
             print('Elapsed_time for epoch(%s): %s'%(epoch, epoch_timer.stop()))

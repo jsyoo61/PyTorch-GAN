@@ -8,6 +8,10 @@ Instrustion on running the script:
 4. Run the sript using command 'python3 srgan.py'
 """
 # %%
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 import argparse
 import os
 import numpy as np
@@ -24,10 +28,6 @@ from torch.autograd import Variable
 from models import *
 from datasets import *
 
-import torch.nn as nn
-import torch.nn.functional as F
-import torch
-
 from tools.tools import tdict, Timer, append, AverageMeter
 from utils import *
 
@@ -35,25 +35,21 @@ from utils import *
 os.makedirs("images", exist_ok=True)
 os.makedirs("saved_models", exist_ok=True)
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--epoch", type=int, default=0, help="epoch to start training from")
-parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
-parser.add_argument("--dataset_name", type=str, default="img_align_celeba", help="name of the dataset")
-parser.add_argument("--batch_size", type=int, default=4, help="size of the batches")
-parser.add_argument("--batch_m", type=int, default=1, help="batch multiplier. iterate over n batches and then apply gradients")
-parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
-parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
-parser.add_argument("--decay_epoch", type=int, default=100, help="epoch from which to start lr decay")
-parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
-parser.add_argument("--hr_height", type=int, default=256, help="high res. image height")
-parser.add_argument("--hr_width", type=int, default=256, help="high res. image width")
-parser.add_argument("--channels", type=int, default=3, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=100, help="interval between saving image samples")
-parser.add_argument("--checkpoint_interval", type=int, default=-1, help="interval between model checkpoints")
-parser.add_argument("--checkpoint_name", type=str, default='default', help="name of checkpoint")
-
-opt = parser.parse_args()
+opt = tdict()
+opt.n_epochs=200
+opt.dataset_name='img_align_celeba'
+opt.batch_size=4
+opt.batch_m=1
+opt.lr=0.0002
+opt.b1=0.5
+opt.b2=0.999
+opt.decay_epoch=100
+opt.n_cpu=8
+opt.hr_height=256
+opt.hr_width=256
+opt.channels=3
+opt.sample_interval=100
+opt.checkpoint_name='original'
 print(opt)
 
 # %%
@@ -82,11 +78,6 @@ if cuda:
     criterion_GAN = criterion_GAN.cuda()
     criterion_content = criterion_content.cuda()
 
-if opt.epoch != 0:
-    # Load pretrained models
-    generator.load_state_dict(torch.load("saved_models/generator_%d.pth"))
-    discriminator.load_state_dict(torch.load("saved_models/discriminator_%d.pth"))
-
 # Optimizers
 optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
@@ -105,22 +96,20 @@ epoch_timer = Timer()
 iter_timer = Timer()
 iter_time_meter = AverageMeter()
 
-# ----------
-#  Training
-# ----------
+# %% Training
 global_timer.start()
-for epoch in range(opt.epoch, opt.n_epochs):
+for epoch in range(opt.n_epochs):
     epoch_timer.start()
     for i, imgs in enumerate(dataloader):
         if i % opt.batch_m == 0:
             iter_timer.start()
         # Configure model input
-        imgs_lr = Variable(imgs["lr"].type(Tensor))
-        imgs_hr = Variable(imgs["hr"].type(Tensor))
+        imgs_lr = imgs["lr"].type(Tensor)
+        imgs_hr = imgs["hr"].type(Tensor)
 
         # Adversarial ground truths
-        valid = Variable(Tensor(np.ones((imgs_lr.size(0), *discriminator.output_shape))), requires_grad=False)
-        fake = Variable(Tensor(np.zeros((imgs_lr.size(0), *discriminator.output_shape))), requires_grad=False)
+        valid = torch.ones((imgs_lr.size(0), *discriminator_output_shape)).type(Tensor)
+        fake = torch.zeros((imgs_lr.size(0), *discriminator_output_shape)).type(Tensor)
 
         # ------------------
         #  Train Generators
@@ -193,14 +182,11 @@ for epoch in range(opt.epoch, opt.n_epochs):
 
             gen_hr = make_grid(gen_hr, nrow=1, normalize=True)
             imgs_lr = make_grid(imgs_lr, nrow=1, normalize=True)
-            img_grid = torch.cat((imgs_lr, gen_hr), -1)
+            img_grid = torch.cat((imgs_hr_raw, imgs_lr, gen_hr), -1)
             save_image(img_grid, "images/%d.png" % batches_done, normalize=False)
-    elapsed_time = epoch_timer.stop()
-    print('Elapsed_time for epoch(%s): %s'%(epoch,elapsed_time))
-    if opt.checkpoint_interval != -1 and epoch % opt.checkpoint_interval == 0:
-        # Save model checkpoints
-        torch.save(generator.state_dict(), "saved_models/generator_%d.pth" % epoch)
-        torch.save(discriminator.state_dict(), "saved_models/discriminator_%d.pth" % epoch)
+
+    print('Elapsed_time for epoch(%s): %s'%epoch_timer.stop())
+
 elapsed_time = global_timer.stop()
 print('Elapsed_time for training: %s'%str(elapsed_time))
 append(str(elapsed_time), 'elapsed_time.txt')
